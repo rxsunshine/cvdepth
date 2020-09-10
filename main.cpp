@@ -1,4 +1,6 @@
 #include <cstdio>
+#include <thread>
+#include <chrono>
 
 #include <opencv2/opencv.hpp>
 #include <SDL.h>
@@ -19,7 +21,7 @@ int main(int argc, char** argv) {
 
     SDL_Init(SDL_INIT_VIDEO);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 6);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_Window* wind = 
         SDL_CreateWindow(
@@ -27,7 +29,13 @@ int main(int argc, char** argv) {
             640, 480, SDL_WINDOW_OPENGL);
     SDL_GLContext glctx = SDL_GL_CreateContext(wind);
     SDL_GL_MakeCurrent(wind, glctx);
-    glewInit();
+    if (GLenum err = glewInit(); err != GLEW_OK) {
+        printf("GLEW init failed: %s\n", glewGetErrorString(err));
+        return 1;
+    }
+    printf("successfully created window\n");
+
+    SDL_SetWindowInputFocus(wind);
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
@@ -38,12 +46,10 @@ int main(int argc, char** argv) {
     Primative quad = GL_CreateQuad();
 
     Image img = Image_Create(640, 480, 3);
-    GLuint tex;
-    glCreateTextures(GL_TEXTURE_2D, 1, &tex);
-    GL_TextureFilter(tex, GL_NEAREST, GL_NEAREST);
-    glTextureParameteri(tex, GL_TEXTURE_WRAP_S, GL_CLAMP);
-    glTextureParameteri(tex, GL_TEXTURE_WRAP_T, GL_CLAMP);
-    glTextureStorage2D(tex, 1, GL_RGB8UI, img.width, img.height);
+    GLuint tex1 = GL_CreateTexture(img.width, img.height, GL_RGB8);
+    GL_TextureFilter(tex1, GL_NEAREST, GL_NEAREST);
+    GLuint tex2 = GL_CreateTexture(img.width, img.height, GL_RGB8);
+    GL_TextureFilter(tex2, GL_NEAREST, GL_NEAREST);
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     bool running = true;
@@ -59,31 +65,40 @@ int main(int argc, char** argv) {
         for (int j = 0; j < img.height; ++j) {
             int y = (j * out.rows) / img.height;
             for (int i = 0; i < img.width; ++i) {
-                int x = ((i * out.cols) / img.width) * 3;
-                bytes[(j * img.width + i) * 3 + 0] = out.at<uint8_t>(y, x + 0);
-                bytes[(j * img.width + i) * 3 + 1] = out.at<uint8_t>(y, x + 1);
-                bytes[(j * img.width + i) * 3 + 2] = out.at<uint8_t>(y, x + 2);
+                int x = (i * out.cols) / img.width;
+                auto col = out.at<cv::Vec3b>(y, x);
+                bytes[(j * img.width + i) * 3 + 0] = col[2];
+                bytes[(j * img.width + i) * 3 + 1] = col[1];
+                bytes[(j * img.width + i) * 3 + 2] = col[0];
             }
         }
 
-        glTextureSubImage2D(tex, 0, 0, 0, img.width, img.height, GL_RGB, GL_UNSIGNED_INT, bytes);
+        std::swap(tex1, tex2);
+        glTextureSubImage2D(tex1, 0, 0, 0, img.width, img.height, GL_RGB, GL_UNSIGNED_BYTE, img.data);
 
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(quadprog);
 
         glActiveTexture(GL_TEXTURE0 + 0);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        GL_PassUniform(glGetUniformLocation(quadprog, "u_image"), 0);
+        glBindTexture(GL_TEXTURE_2D, tex1);
+        GL_PassUniform(glGetUniformLocation(quadprog, "u_image1"), 0);
+        glActiveTexture(GL_TEXTURE0 + 1);
+        glBindTexture(GL_TEXTURE_2D, tex2);
+        GL_PassUniform(glGetUniformLocation(quadprog, "u_image2"), 1);
+        GL_PassUniform(glGetUniformLocation(quadprog, "u_res"), 640.0f, 480.0f);
 
         glBindVertexArray(quad.vao);
         quad.Draw();
 
         SDL_GL_SwapWindow(wind);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     Image_Free(img);
-    glDeleteTextures(1, &tex);
+    glDeleteTextures(1, &tex1);
+    glDeleteTextures(1, &tex2);
     glDeleteProgram(quadprog);
     GL_DestroyPrimative(quad);
     SDL_DestroyWindow(wind);
